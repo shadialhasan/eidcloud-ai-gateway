@@ -1,0 +1,156 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Locate autoloader
+$autoloader = __DIR__ . '/../src/Autoloader.php';
+if (!file_exists($autoloader)) {
+    fwrite(STDERR, "Error: Autoloader not found at {$autoloader}\n");
+    exit(1);
+}
+require_once $autoloader;
+
+use EidCloud\AiGateway\Gateway;
+use EidCloud\AiGateway\Server\HttpServer;
+
+$argv = $_SERVER['argv'] ?? [];
+$argc = count($argv);
+
+function printHelp(): void
+{
+    echo <<<HELP
+EidCloud AI Gateway CLI (v1.0.0)
+Unified model-agnostic AI Gateway & Reverse Proxy in pure PHP.
+
+USAGE:
+  php bin/eidcloud-gateway <command> [options]
+
+COMMANDS:
+  serve              Start the HTTP AI Gateway reverse proxy server
+  check-health       Query and inspect status of all local & cloud AI providers
+  accounting         Inspect current token usage and estimated API cost
+  routes             List active model alias mappings and target pipelines
+  version            Display gateway version
+
+OPTIONS:
+  --port=<port>      Port to listen on (default: 8000)
+  --host=<host>      Host address to bind (default: 127.0.0.1)
+  --strategy=<type>  Routing strategy: failover, round-robin, weighted (default: failover)
+  --budget=<usd>     Hard spending limit in USD
+  --json             Output response in programmatic JSON format
+  -h, --help         Show this formatted help manual
+
+EXAMPLES:
+  php bin/eidcloud-gateway serve --port=8000
+  php bin/eidcloud-gateway check-health
+  php bin/eidcloud-gateway check-health --json
+  php bin/eidcloud-gateway accounting --json
+  php bin/eidcloud-gateway routes
+
+HELP;
+}
+
+$options = [];
+$command = null;
+
+for ($i = 1; $i < $argc; $i++) {
+    $arg = $argv[$i];
+    if ($arg === '-h' || $arg === '--help' || $arg === 'help') {
+        printHelp();
+        exit(0);
+    }
+    if ($arg === '-v' || $arg === '--version' || $arg === 'version') {
+        echo "EidCloud AI Gateway v" . Gateway::VERSION . "\n";
+        exit(0);
+    }
+    if (str_starts_with($arg, '--')) {
+        $parts = explode('=', substr($arg, 2), 2);
+        $key = $parts[0];
+        $val = $parts[1] ?? true;
+        $options[$key] = $val;
+    } elseif ($command === null) {
+        $command = $arg;
+    }
+}
+
+if ($command === null) {
+    printHelp();
+    exit(0);
+}
+
+$isJson = isset($options['json']);
+$gateway = Gateway::createDefault([
+    'default_strategy' => $options['strategy'] ?? 'failover',
+    'budget_limit_usd' => isset($options['budget']) ? (float)$options['budget'] : 0.0,
+]);
+
+switch ($command) {
+    case 'serve':
+        $host = (string)($options['host'] ?? '127.0.0.1');
+        $port = (int)($options['port'] ?? 8000);
+        $server = new HttpServer($gateway, $host, $port);
+        $server->run();
+        break;
+
+    case 'check-health':
+        $health = $gateway->getHealthMonitor()->checkAll();
+        if ($isJson) {
+            echo json_encode($health, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+            exit(0);
+        }
+        echo "=======================================================\n";
+        echo " 🩺 EidCloud AI Gateway - Provider Health Diagnostics\n";
+        echo "=======================================================\n";
+        foreach ($health as $provider => $info) {
+            $statusIcon = $info['status'] === 'healthy' ? '✅ HEALTHY' : '❌ UNREACHABLE';
+            $latency = sprintf('%.2f ms', $info['latency_ms']);
+            printf(" • %-12s : %-15s [latency: %-9s]\n", strtoupper($provider), $statusIcon, $latency);
+            if ($info['error']) {
+                echo "   └─ Detail: {$info['error']}\n";
+            }
+        }
+        echo "=======================================================\n";
+        break;
+
+    case 'accounting':
+        $summary = $gateway->getLedger()->getSummary();
+        if ($isJson) {
+            echo json_encode($summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+            exit(0);
+        }
+        echo "=======================================================\n";
+        echo " 💰 EidCloud AI Gateway - Token Accounting Ledger\n";
+        echo "=======================================================\n";
+        printf(" Total Requests: %d\n", $summary['total_requests']);
+        printf(" Total Tokens:   %d\n", $summary['total_tokens']);
+        printf(" Total Cost:     $%s USD\n", number_format($summary['total_cost_usd'], 4));
+        if ($summary['budget_limit_usd'] > 0) {
+            printf(" Budget Limit:   $%s USD (Exceeded: %s)\n", number_format($summary['budget_limit_usd'], 2), $summary['budget_exceeded'] ? 'YES' : 'NO');
+        }
+        echo " Provider Breakdown:\n";
+        foreach ($summary['providers'] as $pName => $pData) {
+            printf("   - %-10s : %d tokens (%d reqs) - $%s\n", $pName, $pData['total_tokens'], $pData['total_requests'], number_format($pData['estimated_cost_usd'], 4));
+        }
+        echo "=======================================================\n";
+        break;
+
+    case 'routes':
+        $aliases = $gateway->getRouter()->getAliases();
+        if ($isJson) {
+            echo json_encode($aliases, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+            exit(0);
+        }
+        echo "=======================================================\n";
+        echo " 🔀 EidCloud AI Gateway - Active Model Aliases & Routes\n";
+        echo "=======================================================\n";
+        foreach ($aliases as $alias => $targets) {
+            printf(" • %-10s => %s\n", $alias, implode(' -> ', $targets));
+        }
+        echo "=======================================================\n";
+        break;
+
+    default:
+        fwrite(STDERR, "Error: Unknown command '{$command}'. Use --help for usage.\n");
+        exit(1);
+}

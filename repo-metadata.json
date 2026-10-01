@@ -1,0 +1,12 @@
+{
+  "description": "Unified model-agnostic local AI gateway with automatic failover, load balancing, and token accounting in pure PHP",
+  "topics": [
+    "eidcloud",
+    "ai-gateway",
+    "llm-proxy",
+    "ollama",
+    "load-balancer",
+    "failover",
+    "php8"
+  ]
+}
